@@ -1,8 +1,10 @@
 # cc-cost
 
-**在 Claude Code 里一句话看光 token 消耗。不离开对话。**
+**不只是查账——让 Claude 自己学会省钱。**
 
-*See where your tokens go — without leaving your conversation.*
+*Not just tracking — your Claude learns to spend less.*
+
+装完以后，Claude 每次看成本数据会自动反思、调整行为、记住教训。你不需要盯着仪表盘，Claude 自己会省。
 
 ```
 /cc-cost

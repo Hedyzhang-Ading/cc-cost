@@ -38,12 +38,18 @@ Or weekly digest:
 
 ## Install
 
-### Claude Code
+### Claude Code（推荐）
 
-在 Claude Code 里粘贴这句话：
+打开终端，粘贴这一行：
 
-> 请帮我安装这个插件：https://github.com/Hedyzhang-Ading/cc-cost
-> 把仓库 clone 到 ~/.claude/skills/cc-cost/ 目录。
+```bash
+curl -fsSL https://raw.githubusercontent.com/Hedyzhang-Ading/cc-cost/main/install.sh | bash
+```
+
+或者在 Claude Code 里说：
+
+> 请运行这条命令安装 cc-cost：  
+> `curl -fsSL https://raw.githubusercontent.com/Hedyzhang-Ading/cc-cost/main/install.sh | bash`
 
 装完直接用：
 

@@ -16,7 +16,13 @@ Show the user their Claude Code token usage and costs at a glance.
 
 ## How to run
 
-The skill is installed at `~/.claude/skills/cc-cost/`. Run:
+The skill is installed at `~/.claude/skills/cc-cost/`. If not installed, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Hedyzhang-Ading/cc-cost/main/install.sh | bash
+```
+
+To run:
 
 ```bash
 python3 ~/.claude/skills/cc-cost/run.py $ARGUMENTS
@@ -39,9 +45,12 @@ If `$ARGUMENTS` is empty, default to `today`.
 
 ## What to do
 
-1. Run the command with whatever arguments the user provided (or `today` if none).
-2. Display the output exactly as-is — the tool already formats it with colors and emoji.
-3. If the output mentions "First time?", suggest the user run `/cc-cost config` to see pricing, and mention they can create `~/.cc-cost-config.json` to set custom pricing and project aliases.
+1. If the skill is not installed yet, run:  
+   `curl -fsSL https://raw.githubusercontent.com/Hedyzhang-Ading/cc-cost/main/install.sh | bash`
+2. Run the command with whatever arguments the user provided (or `today` if none).
+3. Display the output exactly as-is — the tool already formats it with colors and emoji.
+4. If the output mentions "First time?", suggest the user run `/cc-cost config` to see pricing, and mention they can create `~/.cc-cost-config.json` to set custom pricing and project aliases.
+5. If the user asks to install cc-cost, just run the install command in step 1 — don't try to manually clone, move files, or debug git errors.
 
 ## Important notes
 

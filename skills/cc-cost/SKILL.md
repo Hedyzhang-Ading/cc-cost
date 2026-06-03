@@ -31,6 +31,7 @@ If `$ARGUMENTS` is empty, default to `today`.
 | `today` (default) | Today's token usage by project + model |
 | `projects` | All projects ranked by total cost |
 | `daily -d N` | Daily cost trend for last N days |
+| `report` | Weekly digest with vs-last-week, top project, anomaly, tips |
 | `all` | One-paragraph overview of all history |
 | `insights` | Cost-saving optimization tips |
 | `compare` | Compare your pricing vs official benchmarks |

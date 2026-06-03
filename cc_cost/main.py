@@ -241,6 +241,7 @@ HELP_TEXT = f"""
   {C.bold('python3 run.py')} today        Today by project + model
   {C.bold('python3 run.py')} projects     All projects ranked by cost
   {C.bold('python3 run.py')} daily -d 7   Daily trend (7 days)
+  {C.bold('python3 run.py')} report       Weekly digest
   {C.bold('python3 run.py')} all          Overview
   {C.bold('python3 run.py')} config       Pricing & aliases
   {C.bold('python3 run.py')} insights     Cost-saving tips
@@ -365,6 +366,11 @@ def cmd_today(records: list[dict], cfg: dict):
     insights = analyze(day_records, cfg)
     if insights:
         print(f"  {insights[0]}")
+
+    # Anomaly check
+    anomaly_msg = _anomaly_warning(records)
+    if anomaly_msg:
+        print(f"  {anomaly_msg}")
 
     # Budget check
     budget_msg = check_budget(records, cfg)
@@ -837,6 +843,189 @@ def check_budget(records: list[dict], cfg: dict) -> str | None:
     return None
 
 
+# ─── Anomaly detection ─────────────────────────────────────
+
+def detect_anomaly(records: list[dict]) -> dict | None:
+    """Check if today's spend is statistically unusual.
+
+    Returns a dict with anomaly info, or None if normal.
+    """
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_ts = today_start.timestamp() * 1000
+    cutoff = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff_ts = cutoff.timestamp() * 1000
+
+    # Daily totals for last 30 days (excluding today)
+    daily: dict[str, float] = defaultdict(float)
+    for r in records:
+        ts = r.get("timestamp")
+        if not ts or ts < cutoff_ts:
+            continue
+        day = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+        daily[day] += r["cost_total"]
+
+    today_key = now.strftime("%Y-%m-%d")
+    today_cost = daily.get(today_key, 0)
+
+    # Exclude today from baseline
+    past_costs = [c for d, c in daily.items() if d != today_key]
+    if len(past_costs) < 5:
+        return None
+
+    mean = sum(past_costs) / len(past_costs)
+    variance = sum((c - mean) ** 2 for c in past_costs) / len(past_costs)
+    std = variance ** 0.5
+
+    if std < 0.1 or today_cost <= mean + 2 * std:
+        return None
+
+    # Find the most expensive session today
+    top_session = None
+    top_cost = 0.0
+    today_records = [r for r in records if r.get("timestamp") and r["timestamp"] >= today_ts]
+    session_costs: dict[str, float] = defaultdict(float)
+    for r in today_records:
+        sid = r.get("session_id", "?")
+        session_costs[sid] += r["cost_total"]
+    if session_costs:
+        top_sid = max(session_costs, key=session_costs.get)
+        top_cost = session_costs[top_sid]
+
+    return {
+        "today_cost": today_cost,
+        "mean": mean,
+        "std": std,
+        "multiplier": today_cost / mean if mean > 0 else 0,
+        "top_session_id": top_sid[:8] if top_sid else "?",
+        "top_session_cost": top_cost,
+    }
+
+
+def _anomaly_warning(records: list[dict]) -> str | None:
+    """Return anomaly warning string or None."""
+    a = detect_anomaly(records)
+    if not a:
+        return None
+    return (
+        f"{C.yellow('⚠️  Spend anomaly:')} {fmt_money(a['today_cost'])} today "
+        f"vs daily avg {fmt_money(a['mean'])} "
+        f"({a['multiplier']:.1f}x). "
+        f"Top session: {a['top_session_id']}… ({fmt_money(a['top_session_cost'])})."
+    )
+
+
+# ─── Weekly report ─────────────────────────────────────────
+
+def cmd_report(records: list[dict], cfg: dict):
+    """Generate a weekly cost digest."""
+    now = datetime.now(timezone.utc)
+
+    # This week: Monday 00:00 → now
+    monday = now - timedelta(days=now.weekday())
+    monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+    monday_ts = monday.timestamp() * 1000
+    now_ts = now.timestamp() * 1000
+
+    # Last week: previous Monday → this Monday
+    last_monday = monday - timedelta(days=7)
+    last_monday_ts = last_monday.timestamp() * 1000
+
+    this_week = [r for r in records if r.get("timestamp") and monday_ts <= r["timestamp"] <= now_ts]
+    last_week = [r for r in records if r.get("timestamp") and last_monday_ts <= r["timestamp"] < monday_ts]
+
+    if not this_week:
+        print(C.dim("\n📭 No activity this week yet.\n"))
+        return
+
+    this_cost = sum(r["cost_total"] for r in this_week)
+    this_input = sum(r["input_tokens"] for r in this_week)
+    this_output = sum(r["output_tokens"] for r in this_week)
+    this_cache = sum(r["cache_read_tokens"] for r in this_week)
+    this_sessions = len(set(r["session_id"] for r in this_week))
+
+    last_cost = sum(r["cost_total"] for r in last_week)
+
+    # Top project
+    proj_costs: dict[str, float] = defaultdict(float)
+    for r in this_week:
+        proj_costs[project_name(r["cwd"], cfg)] += r["cost_total"]
+    top_proj = max(proj_costs, key=proj_costs.get) if proj_costs else "?"
+    top_proj_pct = proj_costs[top_proj] / this_cost * 100 if this_cost > 0 else 0
+
+    # Most expensive session
+    session_costs: dict[str, float] = defaultdict(float)
+    session_models: dict[str, str] = {}
+    for r in this_week:
+        sid = r["session_id"]
+        session_costs[sid] += r["cost_total"]
+        session_models[sid] = r.get("model", "?")
+    top_session_id = max(session_costs, key=session_costs.get) if session_costs else "?"
+    top_session_cost = session_costs[top_session_id]
+
+    # Day with most activity
+    day_costs: dict[str, float] = defaultdict(float)
+    for r in this_week:
+        if r.get("timestamp"):
+            day = datetime.fromtimestamp(r["timestamp"] / 1000).strftime("%m/%d")
+            day_costs[day] += r["cost_total"]
+    peak_day = max(day_costs, key=day_costs.get) if day_costs else "?"
+    peak_cost = day_costs[peak_day]
+
+    # Cache efficiency
+    cache_rate = this_cache / (this_input + this_cache) * 100 if (this_input + this_cache) > 0 else 0
+
+    # Print digest
+    mon_str = monday.strftime("%m/%d")
+    now_str = now.strftime("%m/%d")
+    print(f"\n{C.bold('📬 Weekly Digest')}  {C.dim(f'{mon_str} → {now_str}')}")
+    print(SEP)
+
+    # Big number: total
+    print(f"  {C.bold('Total:')}      {fmt_money(this_cost)}")
+    if last_cost > 0:
+        change = (this_cost / last_cost - 1) * 100
+        arrow = "↑" if change > 0 else "↓"
+        color = C.yellow if abs(change) > 30 else C.dim
+        print(f"  {C.dim('vs last week:')} {color(f'{change:+.0f}% {arrow}')}  "
+              f"({fmt_money(last_cost)} → {fmt_money(this_cost)})")
+    print()
+
+    # Stats row
+    print(f"  {C.dim('Sessions:')}    {this_sessions}")
+    print(f"  {C.dim('Tokens in:')}   {fmt_tokens(this_input)}  "
+          f"{C.dim('out:')} {fmt_tokens(this_output)}")
+    print(f"  {C.dim('Cache rate:')}  {cache_rate:.1f}% "
+          + (C.green("✓ healthy") if cache_rate > 80 else C.yellow("⚠ low")))
+    print()
+
+    # Top project
+    print(f"  {C.dim('Top project:')} {C.bold(top_proj)}  "
+          f"{fmt_money(proj_costs[top_proj])} ({top_proj_pct:.0f}%)")
+    print(f"  {C.dim('Peak day:')}    {peak_day}  {fmt_money(peak_cost)}")
+    most_expensive_model = session_models.get(top_session_id, "?")
+    print(f"  {C.dim('Priciest session:')} {top_session_id[:8]}… "
+          f"{fmt_money(top_session_cost)}  ({most_expensive_model})")
+
+    # Anomaly check
+    anomaly = detect_anomaly(records)
+    if anomaly:
+        print(f"\n  {_anomaly_warning(records)}")
+    else:
+        print(f"\n  {C.dim('Spending pattern: normal.')}")
+
+    # Tip
+    insights_data = analyze(this_week, cfg)
+    tips = [i for i in insights_data if C.YLW in i]
+    if tips:
+        print(f"\n  {C.bold('💡 Tip:')}")
+        print(f"  {tips[0]}")
+    elif insights_data:
+        print(f"\n  {insights_data[0]}")
+
+    print()
+
+
 # ─── Entry point ───────────────────────────────────────────
 
 def main():
@@ -886,6 +1075,8 @@ def main():
         cmd_insights(records, cfg)
     elif cmd in ("compare", "cmp"):
         cmd_compare(records, cfg)
+    elif cmd in ("report", "weekly"):
+        cmd_report(records, cfg)
     else:
         print(f"\n{C.yellow('Unknown command:')} {cmd}")
         print(f"Try {C.bold('python3 run.py help')}\n")

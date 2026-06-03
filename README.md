@@ -16,6 +16,24 @@ Total                                         422K     228K    37.5M      ¥2.50
 💡 Cache hits: 37.5M tokens, saved ~¥110 (vs no cache)
 ```
 
+Or weekly digest:
+
+```
+/cc-cost report
+
+📬 Weekly Digest  06/02 → 06/08
+────────────────────────────────────────
+  Total:      ¥127.50
+  vs last week: -15% ↓
+
+  Sessions:   34  ·  Cache rate: 92% ✓
+  Top project: 🚀 my-saas ¥89 (70%)
+  Peak day:   06/05  ¥34.20
+
+  ⚠️  Spend anomaly: 06/05 was 3x daily avg
+  💡 Tip: switch to DeepSeek V3 for simple tasks → save ¥40/week
+```
+
 ---
 
 ## Install
@@ -71,6 +89,7 @@ Zero dependencies. Python >= 3.9 (macOS built-in).
 | `today` (default) | Today by project + model |
 | `projects` | All projects ranked by cost |
 | `daily -d N` | Daily trend for N days |
+| `report` | Weekly digest (vs last week) |
 | `all` | One-paragraph overview |
 | `insights` | Cost-saving tips |
 | `compare` | Your price vs official |

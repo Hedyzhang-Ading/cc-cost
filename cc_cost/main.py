@@ -208,6 +208,7 @@ HELP_TEXT = f"""
   {C.bold('python3 run.py')} daily -d 7   Daily trend (7 days)
   {C.bold('python3 run.py')} all          Overview
   {C.bold('python3 run.py')} config       Pricing & aliases
+  {C.bold('python3 run.py')} insights     Cost-saving tips
   {C.bold('python3 run.py')} help         This message
 
 {C.cyan('Examples:')}
@@ -323,6 +324,11 @@ def cmd_today(records: list[dict], cfg: dict):
         if saved > 0:
             print(f"\n{C.green('💡 Cache hits:')} {fmt_tokens(total_cache)} tokens, "
                   f"{C.green(f'saved ~{fmt_money(saved)}')}")
+
+    # Quick insight
+    insights = analyze(day_records, cfg)
+    if insights:
+        print(f"  {insights[0]}")
 
     _suggest_setup(cfg)
 
@@ -444,6 +450,11 @@ def cmd_all(records: list[dict], cfg: dict):
     days = max((last - first).days, 1)
     print(f"  " + C.dim("─" * 25))
     print(f"  Daily avg:  {fmt_money(total_cost / days)}")
+
+    # Quick insights
+    insights = analyze(records, cfg)
+    if insights:
+        print(f"\n  {C.bold('Top insight:')} {insights[0]}")
     print()
 
     _suggest_setup(cfg)
@@ -476,6 +487,157 @@ def cmd_config(cfg: dict):
     else:
         print(f"\n{C.dim('No project aliases set. Add some in ~/.cc-cost-config.json:')}")
         print(C.dim('  {"aliases": {"/Users/you/projects/foo": "🚀 My Project"}}'))
+
+
+# ─── Insights engine ───────────────────────────────────────
+
+def analyze(records: list[dict], cfg: dict) -> list[str]:
+    """Generate cost-saving insights from usage patterns."""
+    insights = []
+
+    if not records:
+        return insights
+
+    # Group by model (skip synthetic/unknown)
+    model_stats: dict[str, dict] = defaultdict(lambda: {
+        "cost": 0.0, "input": 0, "output": 0, "msgs": 0,
+    })
+    for r in records:
+        m = r["model"]
+        if m in ("<synthetic>", "unknown", "default"):
+            continue
+        model_stats[m]["cost"] += r["cost_total"]
+        model_stats[m]["input"] += r["input_tokens"]
+        model_stats[m]["output"] += r["output_tokens"]
+        model_stats[m]["msgs"] += 1
+
+    total_cost = sum(s["cost"] for s in model_stats.values())
+    total_input = sum(s["input"] for s in model_stats.values())
+    total_output = sum(s["output"] for s in model_stats.values())
+    total_cache_read = sum(r["cache_read_tokens"] for r in records)
+    total_cache_write = sum(r["cache_write_tokens"] for r in records)
+
+    # ── 1. Model tier check ──
+    # Compare: what if user switched to a cheaper model?
+    current_model = max(model_stats, key=lambda m: model_stats[m]["cost"])
+    alternatives = {
+        "deepseek-v4-pro": ("deepseek-chat", "DeepSeek V3"),
+        "deepseek-reasoner": ("deepseek-chat", "DeepSeek V3"),
+        "claude-opus-4-8": ("claude-sonnet-4-6", "Claude Sonnet"),
+        "claude-sonnet-4-6": ("claude-haiku-4-5", "Claude Haiku"),
+    }
+    if current_model in alternatives:
+        alt_id, alt_name = alternatives[current_model]
+        s = model_stats[current_model]
+        alt_cost = (
+            s["input"] / 1e6 * get_price(alt_id, "input", cfg) +
+            s["output"] / 1e6 * get_price(alt_id, "output", cfg)
+        )
+        saved = s["cost"] - alt_cost
+        if saved > s["cost"] * 0.1:  # >10% savings
+            insights.append(
+                f"{C.yellow('💡 Model switch:')} {current_model} → {alt_name} "
+                f"would save ~{fmt_money(saved)} "
+                f"({saved / s['cost'] * 100:.0f}% cheaper). "
+                f"Use for routine tasks, keep {current_model} for complex work."
+            )
+
+    # ── 2. Cache efficiency ──
+    cache_hit_rate = (
+        total_cache_read / (total_input + total_cache_read) * 100
+        if (total_input + total_cache_read) > 0 else 0
+    )
+    if cache_hit_rate < 50 and total_cache_read > 0:
+        insights.append(
+            f"{C.yellow('💡 Cache hit rate:')} {cache_hit_rate:.1f}% — low. "
+            f"Structure your CLAUDE.md and prompts consistently "
+            f"to increase cache reuse. Each 1% → save ~{fmt_money(total_cost * 0.005)}."
+        )
+    elif cache_hit_rate > 90:
+        insights.append(
+            f"{C.green('✅ Cache hit rate:')} {cache_hit_rate:.1f}% — excellent. "
+            f"Your prompt structure is cache-friendly."
+        )
+
+    if total_cache_write > total_cache_read * 2 and total_cache_write > 1_000_000:
+        insights.append(
+            f"{C.yellow('💡 Cache waste:')} Writing {fmt_tokens(total_cache_write)} "
+            f"but only reading {fmt_tokens(total_cache_read)}. "
+            f"Long sessions without follow-up waste cache writes."
+        )
+
+    # ── 3. Spend concentration ──
+    proj_costs: dict[str, float] = defaultdict(float)
+    for r in records:
+        proj_costs[project_name(r["cwd"], cfg)] += r["cost_total"]
+    sorted_projects = sorted(proj_costs.values(), reverse=True)
+    if len(sorted_projects) >= 2:
+        top1 = sorted_projects[0]
+        top2 = sorted_projects[1] if len(sorted_projects) > 1 else 0
+        if top1 > total_cost * 0.6 and total_cost > 10:
+            insights.append(
+                f"{C.yellow('💡 Top project:')} One project accounts for "
+                f"{top1 / total_cost * 100:.0f}% of spend. "
+                f"Consider a dedicated CLAUDE.md with cache-friendly structure "
+                f"to reduce token waste on repeated context."
+            )
+
+    # ── 4. Output/input ratio ──
+    if total_input > 0:
+        ratio = total_output / total_input
+        if ratio > 0.8:
+            insights.append(
+                f"{C.yellow('💡 Output ratio:')} {ratio:.1f}:1 — high. "
+                f"Model is generating long responses. Tighter prompts with "
+                f"output length limits could reduce costs."
+            )
+        elif ratio < 0.2 and total_output > 100_000:
+            insights.append(
+                f"{C.green('✅ Output ratio:')} {ratio:.1f}:1 — lean. "
+                f"Good prompt discipline."
+            )
+
+    # ── 5. Single-model risk ──
+    if len(model_stats) == 1 and current_model != "default":
+        m = list(model_stats.keys())[0]
+        expensive_models = ["claude-opus-4-8", "claude-sonnet-4-6", "deepseek-reasoner"]
+        if m in expensive_models:
+            insights.append(
+                f"{C.yellow('💡 One-model trap:')} You only use {m}. "
+                f"Many tasks (summaries, formatting, simple Q&A) don't need "
+                f"a reasoning model. Routing simple tasks to a cheaper model "
+                f"can cut costs 50-80%."
+            )
+
+    return insights
+
+
+def cmd_insights(records: list[dict], cfg: dict):
+    """Show optimization insights."""
+    insights = analyze(records, cfg)
+    if not insights:
+        print(f"\n{C.green('🎉 No obvious savings found.')} "
+              f"Your usage looks efficient!\n")
+        return
+
+    print(f"\n{C.bold('🧠 Optimization Insights')}")
+    print(SEP)
+    for i, insight in enumerate(insights, 1):
+        print(f"  {i}. {insight}")
+        print()
+
+    # Summary
+    total_cost = sum(r["cost_total"] for r in records)
+    potential_savings = sum(
+        # Recalculate model switch savings
+        sum(r["cost_total"] for r in records if r["model"] == m) * 0.3
+        for m in ["claude-opus-4-8", "deepseek-reasoner"]
+        if any(r["model"] == m for r in records)
+    )
+    if potential_savings > 0:
+        print(SEP)
+        print(f"  {C.bold('Estimated savings potential:')} {fmt_money(potential_savings)}")
+    print()
 
 
 # ─── Entry point ───────────────────────────────────────────
@@ -523,6 +685,8 @@ def main():
         cmd_daily(records, cfg, days)
     elif cmd == "all":
         cmd_all(records, cfg)
+    elif cmd == "insights":
+        cmd_insights(records, cfg)
     else:
         print(f"\n{C.yellow('Unknown command:')} {cmd}")
         print(f"Try {C.bold('python3 run.py help')}\n")

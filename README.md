@@ -72,6 +72,7 @@ Zero dependencies. Python >= 3.9 (macOS built-in).
 | `projects` | All projects ranked by cost |
 | `daily -d N` | Daily trend for N days |
 | `all` | One-paragraph overview |
+| `insights` | Cost-saving tips |
 | `config` | Pricing & aliases |
 
 ---

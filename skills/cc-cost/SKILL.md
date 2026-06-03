@@ -32,6 +32,7 @@ If `$ARGUMENTS` is empty, default to `today`.
 | `projects` | All projects ranked by total cost |
 | `daily -d N` | Daily cost trend for last N days |
 | `all` | One-paragraph overview of all history |
+| `insights` | Cost-saving optimization tips |
 | `config` | Current pricing and project aliases |
 
 ## What to do

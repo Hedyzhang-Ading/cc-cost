@@ -73,6 +73,7 @@ Zero dependencies. Python >= 3.9 (macOS built-in).
 | `daily -d N` | Daily trend for N days |
 | `all` | One-paragraph overview |
 | `insights` | Cost-saving tips |
+| `compare` | Your price vs official |
 | `config` | Pricing & aliases |
 
 ---
@@ -83,6 +84,7 @@ Create `~/.cc-cost-config.json`:
 
 ```json
 {
+  "monthly_budget": 500,
   "pricing": {
     "deepseek-v4-pro": {
       "input": 1.0,  "output": 2.0,
@@ -95,7 +97,9 @@ Create `~/.cc-cost-config.json`:
 }
 ```
 
-Built-in pricing: Claude Opus/Sonnet/Haiku, DeepSeek V3/R1/V4.
+- **monthly_budget**：月预算（元），超支自动预警
+- **pricing**：你的渠道价格，用来跟官方价对比
+- **aliases**：项目目录 → 可读名称Built-in comparison: Claude, DeepSeek, OpenAI, OpenRouter official prices.
 
 ---
 

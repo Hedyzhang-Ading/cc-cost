@@ -64,6 +64,41 @@ DEFAULT_PRICING = {
 
 DEFAULT_ALIASES: dict[str, str] = {}
 
+# Official benchmark prices (元/1M tokens) for comparison
+# Format: (input, output, cache_read, source)
+BENCHMARK_PRICES: dict[str, list[tuple[str, float, float, float, str]]] = {
+    "claude-opus-4-8": [
+        ("Anthropic 官方", 108.0, 540.0, 10.8, "anthropic.com/pricing"),
+    ],
+    "claude-sonnet-4-6": [
+        ("Anthropic 官方", 21.6, 108.0, 2.16, "anthropic.com/pricing"),
+    ],
+    "claude-haiku-4-5": [
+        ("Anthropic 官方", 5.76, 28.8, 0.58, "anthropic.com/pricing"),
+    ],
+    "deepseek-chat": [
+        ("DeepSeek 官方", 1.0, 2.0, 0.02, "platform.deepseek.com"),
+    ],
+    "deepseek-reasoner": [
+        ("DeepSeek 官方", 3.0, 6.0, 0.025, "platform.deepseek.com"),
+    ],
+    "deepseek-v4-pro": [
+        ("DeepSeek 官方", 1.0, 2.0, 0.02, "platform.deepseek.com"),
+        ("OpenRouter", 1.1, 2.2, 0.028, "openrouter.ai"),
+    ],
+    "gpt-4o": [
+        ("OpenAI 官方", 18.0, 72.0, 9.0, "openai.com/pricing"),
+        ("OpenRouter", 18.0, 72.0, 9.0, "openrouter.ai"),
+    ],
+    "gpt-4o-mini": [
+        ("OpenAI 官方", 1.08, 4.32, 0.54, "openai.com/pricing"),
+        ("OpenRouter", 1.08, 4.32, 0.54, "openrouter.ai"),
+    ],
+    "claude-3.5-sonnet": [
+        ("Anthropic 官方", 21.6, 108.0, 2.16, "anthropic.com/pricing"),
+    ],
+}
+
 
 def load_config() -> dict:
     if CONFIG_FILE.exists():
@@ -209,6 +244,7 @@ HELP_TEXT = f"""
   {C.bold('python3 run.py')} all          Overview
   {C.bold('python3 run.py')} config       Pricing & aliases
   {C.bold('python3 run.py')} insights     Cost-saving tips
+  {C.bold('python3 run.py')} compare      Compare vs official prices
   {C.bold('python3 run.py')} help         This message
 
 {C.cyan('Examples:')}
@@ -329,6 +365,11 @@ def cmd_today(records: list[dict], cfg: dict):
     insights = analyze(day_records, cfg)
     if insights:
         print(f"  {insights[0]}")
+
+    # Budget check
+    budget_msg = check_budget(records, cfg)
+    if budget_msg:
+        print(f"  {budget_msg}")
 
     _suggest_setup(cfg)
 
@@ -455,6 +496,11 @@ def cmd_all(records: list[dict], cfg: dict):
     insights = analyze(records, cfg)
     if insights:
         print(f"\n  {C.bold('Top insight:')} {insights[0]}")
+
+    # Budget
+    budget_msg = check_budget(records, cfg)
+    if budget_msg:
+        print(f"  {budget_msg}")
     print()
 
     _suggest_setup(cfg)
@@ -640,6 +686,157 @@ def cmd_insights(records: list[dict], cfg: dict):
     print()
 
 
+# ─── Price comparison ──────────────────────────────────────
+
+def cmd_compare(records: list[dict], cfg: dict):
+    """Compare your pricing vs official benchmarks."""
+    user_pricing = cfg["pricing"]
+
+    # Find which models are actually in use
+    models_in_use: dict[str, dict] = defaultdict(lambda: {
+        "input": 0, "output": 0, "cache_read": 0, "msgs": 0,
+    })
+    for r in records:
+        m = r["model"]
+        if m in ("<synthetic>", "unknown"):
+            continue
+        models_in_use[m]["input"] += r["input_tokens"]
+        models_in_use[m]["output"] += r["output_tokens"]
+        models_in_use[m]["cache_read"] += r["cache_read_tokens"]
+        models_in_use[m]["msgs"] += 1
+
+    if not models_in_use:
+        print(C.dim("\n📭 No model usage data to compare.\n"))
+        return
+
+    print(f"\n{C.bold('🏦 Price Comparison')} {C.dim('— your channel vs official')}")
+    print(SEP)
+    print(f"  {C.dim(f'{"Model":<22} {"Source":<18} {"Input/1M":>10} {"Output/1M":>10} {"Status":>12}')}")
+
+    total_you = 0.0
+    total_cheapest = 0.0
+    found_issues = False
+
+    for model in sorted(models_in_use):
+        usage = models_in_use[model]
+        benchmarks = BENCHMARK_PRICES.get(model, [])
+
+        # User's current price
+        up = user_pricing.get(model, user_pricing.get("default", {}))
+        u_input = up.get("input", 0)
+        u_output = up.get("output", 0)
+
+        # Calculate user's actual cost
+        user_cost = (
+            usage["input"] / 1e6 * u_input +
+            usage["output"] / 1e6 * u_output
+        )
+
+        # Find the cheapest benchmark for this model
+        cheapest = None
+        for name, b_input, b_output, b_cache, source in benchmarks:
+            b_cost = (
+                usage["input"] / 1e6 * b_input +
+                usage["output"] / 1e6 * b_output
+            )
+            if cheapest is None or b_cost < cheapest[0]:
+                cheapest = (b_cost, name, b_input, b_output, source)
+
+        print(f"\n  {C.bold(model)}")
+        used_in = fmt_tokens(usage["input"])
+        used_out = fmt_tokens(usage["output"])
+        used_msgs = usage["msgs"]
+        print(f"  {C.dim(f'  Used: {used_in} in + {used_out} out  ·  {used_msgs} msgs')}")
+
+        # Show user's price
+        line = f"  {'Your channel':<20} {'':<18} {'¥'+str(u_input):>10} {'¥'+str(u_output):>10}"
+        print(f"  {line}  {C.dim(f'(paid {fmt_money(user_cost)})')}")
+        total_you += user_cost
+
+        # Show all benchmarks
+        for name, b_input, b_output, b_cache, source in benchmarks:
+            b_cost = (
+                usage["input"] / 1e6 * b_input +
+                usage["output"] / 1e6 * b_output
+            )
+            marker = ""
+            if b_input == u_input and b_output == u_output:
+                marker = C.green("  ← match")
+            line = f"  {name:<20} {C.dim(source):<18} {'¥'+str(b_input):>10} {'¥'+str(b_output):>10}"
+            print(f"  {line}{marker}")
+            if cheapest and name == cheapest[1]:
+                total_cheapest += b_cost
+
+        # Overpayment warning
+        if cheapest and user_cost > cheapest[0] * 1.05:  # 5% threshold
+            diff = user_cost - cheapest[0]
+            pct = (user_cost / cheapest[0] - 1) * 100
+            print(f"  {C.yellow(f'⚠️  You pay {pct:.0f}% more than {cheapest[1]} → overpaid ~{fmt_money(diff)}')}")
+            found_issues = True
+
+        # If user's model has NO benchmark, flag it
+        if not benchmarks:
+            print(f"  {C.dim('  (no official benchmark for this model)')}")
+
+    print(f"\n{SEP}")
+    if total_cheapest > 0 and total_you > total_cheapest * 1.05:
+        overpayment = total_you - total_cheapest
+        print(f"  {C.yellow(f'Total overpayment: {fmt_money(overpayment)}')}")
+        print(f"  {C.dim(f'Your cost: {fmt_money(total_you)}  |  Official: {fmt_money(total_cheapest)}')}")
+    else:
+        print(f"  {C.green('✅ Price match — you are paying official rates.')}")
+    print()
+
+
+# ─── Budget check ─────────────────────────────────────────
+
+def check_budget(records: list[dict], cfg: dict) -> str | None:
+    """Return budget warning if approaching/exceeding monthly limit."""
+    budget = cfg.get("monthly_budget", 0)
+    if not budget:
+        return None
+
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start_ts = month_start.timestamp() * 1000
+
+    month_cost = sum(
+        r["cost_total"] for r in records
+        if r.get("timestamp") and r["timestamp"] >= month_start_ts
+    )
+    pct = month_cost / budget * 100
+    days_elapsed = now.day
+    days_total = (now.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    days_total = days_total.day
+    daily_rate = month_cost / max(days_elapsed, 1)
+    projected = daily_rate * days_total
+    overshoot_day = None
+    if daily_rate > 0:
+        remaining = budget - month_cost
+        days_left = remaining / daily_rate
+        if days_left < days_total - days_elapsed:
+            overshoot_day = (now + timedelta(days=days_left + 1)).day
+
+    if pct >= 100:
+        return (
+            f"{C.yellow('🚨 Budget exceeded:')} {fmt_money(month_cost)} / "
+            f"{fmt_money(budget)} ({pct:.0f}%). "
+            f"Projected month-end: {fmt_money(projected)}."
+        )
+    elif pct >= 80:
+        return (
+            f"{C.yellow('⚠️  Budget warning:')} {fmt_money(month_cost)} / "
+            f"{fmt_money(budget)} ({pct:.0f}%). "
+            + (f"At this rate, exceeds on day {overshoot_day}." if overshoot_day else "")
+        )
+    elif pct >= 50:
+        return (
+            f"{C.dim(f'💳 Budget: {fmt_money(month_cost)} / {fmt_money(budget)} ({pct:.0f}%)  '
+                     f'|  projected: {fmt_money(projected)}')}"
+        )
+    return None
+
+
 # ─── Entry point ───────────────────────────────────────────
 
 def main():
@@ -687,6 +884,8 @@ def main():
         cmd_all(records, cfg)
     elif cmd == "insights":
         cmd_insights(records, cfg)
+    elif cmd in ("compare", "cmp"):
+        cmd_compare(records, cfg)
     else:
         print(f"\n{C.yellow('Unknown command:')} {cmd}")
         print(f"Try {C.bold('python3 run.py help')}\n")

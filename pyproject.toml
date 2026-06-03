@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-cost"
+version = "0.1.0"
+description = "One-command cost tracker for Claude Code. See where your tokens go."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "AI Operator"}
+]
+keywords = [
+    "claude-code",
+    "token-tracker",
+    "ai-cost",
+    "ai-operator",
+    "cost-tracking",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Build Tools",
+]
+
+[project.scripts]
+cc-cost = "cc_cost.main:main"
+
+[project.urls]
+Homepage = "https://github.com/ai-operator/cc-cost"
+Issues = "https://github.com/ai-operator/cc-cost/issues"

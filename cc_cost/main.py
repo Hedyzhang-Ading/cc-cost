@@ -279,105 +279,160 @@ def _suggest_setup(cfg: dict):
     """Suggest first-time setup if no config file exists."""
     if CONFIG_FILE.exists() and cfg.get("aliases"):
         return
-    print(C.dim("💡 First time?  Run ") + C.bold("python3 run.py config") + C.dim(" to see pricing."))
-    print(C.dim("   Set project aliases: create ") + C.bold("~/.cc-cost-config.json"))
+    print(C.dim("💡 首次使用？运行 ") + C.bold("/cc-cost config") + C.dim(" 查看定价。"))
+    print(C.dim("   创建 ") + C.bold("~/.cc-cost-config.json") + C.dim(" 设置项目别名。"))
     print()
 
 
-def cmd_today(records: list[dict], cfg: dict):
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_ts = today.timestamp() * 1000
+def cmd_dashboard(records: list[dict], cfg: dict):
+    """Unified dashboard — everything at a glance."""
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_ts = today_start.timestamp() * 1000
+    now_ts = now.timestamp() * 1000
+
+    # ── 1. Today ──
     day_records = [r for r in records if r.get("timestamp") and r["timestamp"] >= today_ts]
 
-    if not day_records:
-        print(C.dim("\n📭 No Claude Code activity yet today."))
-        print(C.dim("   Go build something and come back!\n"))
-        _suggest_setup(cfg)
-        return
-
-    groups: dict[str, dict[str, dict]] = defaultdict(lambda: defaultdict(lambda: {
-        "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0, "msgs": 0,
-    }))
+    proj_groups: dict[str, dict] = defaultdict(lambda: {"输入": 0, "输出": 0, "缓存": 0, "费用": 0.0})
     for r in day_records:
-        proj = project_name(r["cwd"], cfg)
-        g = groups[proj][r["model"]]
-        g["input"] += r["input_tokens"]
-        g["output"] += r["output_tokens"]
-        g["cache_read"] += r["cache_read_tokens"]
-        g["cache_write"] += r["cache_write_tokens"]
-        g["cost"] += r["cost_total"]
-        g["msgs"] += 1
+        g = proj_groups[project_name(r["cwd"], cfg)]
+        g["输入"] += r["input_tokens"]
+        g["输出"] += r["output_tokens"]
+        g["缓存"] += r["cache_read_tokens"]
+        g["费用"] += r["cost_total"]
 
-    total_cost = sum(r["cost_total"] for r in day_records)
-    total_input = sum(r["input_tokens"] for r in day_records)
-    total_output = sum(r["output_tokens"] for r in day_records)
-    total_cache = sum(r["cache_read_tokens"] for r in day_records)
+    today_cost = sum(g["费用"] for g in proj_groups.values())
+    today_input = sum(g["输入"] for g in proj_groups.values())
+    today_output = sum(g["输出"] for g in proj_groups.values())
+    today_cache = sum(g["缓存"] for g in proj_groups.values())
 
-    print(f"\n{C.bold('📊 Today')} — {datetime.now().strftime('%Y-%m-%d')}")
-    print(SEP)
-    header = f"{'Project':<20} {'Model':<20} {'Input':>8} {'Output':>8} {'Cache':>8} {'Cost':>10}"
-    print(C.dim(header))
-    print(SEP)
-
-    for proj in sorted(groups):
-        models = groups[proj]
-        # Only count models with actual tokens
-        visible_models = {
-            m: v for m, v in models.items()
-            if not (v["input"] == 0 and v["output"] == 0 and v["cache_read"] == 0)
-        }
-        multi = len(visible_models) > 1
-        first = True
-        for model in sorted(visible_models):
-            m = visible_models[model]
-            label = proj if first else ""
-            print(f"{label:<20} {model:<20} {fmt_tokens(m['input']):>8} "
-                  f"{fmt_tokens(m['output']):>8} {fmt_tokens(m['cache_read']):>8} "
-                  f"{fmt_money(m['cost']):>10}")
-            first = False
-
-        if multi:
-            proj_cost = sum(m["cost"] for m in visible_models.values())
-            proj_input = sum(m["input"] for m in visible_models.values())
-            proj_output = sum(m["output"] for m in visible_models.values())
-            proj_cache = sum(m["cache_read"] for m in visible_models.values())
-            print(C.dim(f"{'  ── subtotal':<20} {'':<20} {fmt_tokens(proj_input):>8} "
-                        f"{fmt_tokens(proj_output):>8} {fmt_tokens(proj_cache):>8} "
-                        f"{fmt_money(proj_cost):>10}"))
-            print()
-
-    print(SEP)
-    print(f"{C.bold('Total'):<20} {'':<20} {fmt_tokens(total_input):>8} "
-          f"{fmt_tokens(total_output):>8} {fmt_tokens(total_cache):>8} "
-          f"{C.bold(fmt_money(total_cost)):>10}")
-
-    if total_cache > 0:
-        avg_input_price = sum(
+    # Cache savings
+    cache_saved = 0.0
+    if today_cache > 0:
+        avg_price = sum(
             r["cache_read_tokens"] / 1e6 * get_price(r["model"], "input", cfg)
             for r in day_records
         )
-        actual_cache_cost = sum(r["cost_cache_read"] for r in day_records)
-        saved = avg_input_price - actual_cache_cost
-        if saved > 0:
-            print(f"\n{C.green('💡 Cache hits:')} {fmt_tokens(total_cache)} tokens, "
-                  f"{C.green(f'saved ~{fmt_money(saved)}')}")
+        cache_saved = avg_price - sum(r["cost_cache_read"] for r in day_records)
 
-    # Quick insight
-    insights = analyze(day_records, cfg)
-    if insights:
-        print(f"  {insights[0]}")
+    # ── 2. This week ──
+    mon = now - timedelta(days=now.weekday())
+    mon = mon.replace(hour=0, minute=0, second=0, microsecond=0)
+    mon_ts = mon.timestamp() * 1000
+    last_mon_ts = (mon - timedelta(days=7)).timestamp() * 1000
 
-    # Anomaly check
-    anomaly_msg = _anomaly_warning(records)
-    if anomaly_msg:
-        print(f"  {anomaly_msg}")
+    this_week = [r for r in records if r.get("timestamp") and mon_ts <= r["timestamp"] <= now_ts]
+    last_week = [r for r in records if r.get("timestamp") and last_mon_ts <= r["timestamp"] < mon_ts]
 
-    # Budget check
+    week_cost = sum(r["cost_total"] for r in this_week)
+    last_week_cost = sum(r["cost_total"] for r in last_week)
+    week_sessions = len(set(r["session_id"] for r in this_week))
+    week_input = sum(r["input_tokens"] for r in this_week)
+    week_cache = sum(r["cache_read_tokens"] for r in this_week)
+    week_cache_rate = week_cache / (week_input + week_cache) * 100 if (week_input + week_cache) > 0 else 0
+
+    # Peak day this week
+    day_map: dict[str, float] = defaultdict(float)
+    for r in this_week:
+        if r.get("timestamp"):
+            d = datetime.fromtimestamp(r["timestamp"] / 1000).strftime("%m/%d")
+            day_map[d] += r["cost_total"]
+    peak_day = max(day_map, key=day_map.get) if day_map else "?"
+    peak_cost = day_map.get(peak_day, 0)
+
+    # ── 3. Price comparison (compact) ──
+    models_in_use = set(r["model"] for r in records if r["model"] not in ("<synthetic>", "unknown"))
+    overpays: list[str] = []
+    for model in models_in_use:
+        up = cfg["pricing"].get(model, cfg["pricing"].get("default", {}))
+        benchmarks = BENCHMARK_PRICES.get(model, [])
+        for name, b_input, b_output, _b_cache, _source in benchmarks:
+            if up.get("input", 0) > b_input * 1.05 or up.get("output", 0) > b_output * 1.05:
+                diff = (up.get("input", 0) - b_input) / b_input * 100
+                overpays.append(f"{model} 比 {name} 贵 {diff:.0f}%")
+                break
+
+    # ── 4. Anomaly ──
+    anomaly = detect_anomaly(records)
+
+    # ── 5. Best insight ──
+    insights_data = analyze(records, cfg)
+    best_insight = insights_data[0] if insights_data else None
+
+    # ── 6. Budget ──
     budget_msg = check_budget(records, cfg)
+
+    # ════════════════════════════════════════════════════════
+    # RENDER DASHBOARD
+    # ════════════════════════════════════════════════════════
+
+    weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+    wd = weekdays[now.weekday()]
+    date_str = now.strftime("%Y年%-m月%-d日")
+    print(f"\n{C.bold('📊 CC-COST')}  {C.dim(f'{date_str} 周{wd}')}")
+    print(SEP)
+
+    # ── Today ──
+    print(f"\n  {C.bold('今日消耗')}  {fmt_money(today_cost)}")
+    if today_cache > 0 and cache_saved > 0:
+        print(f"  {C.dim(f'缓存命中 {fmt_tokens(today_cache)} tokens  ·  省了 {fmt_money(cache_saved)}')}")
+    print()
+
+    if proj_groups:
+        print(f"  {C.dim(f'{"项目":<22} {"输入":>7} {"输出":>7} {"费用":>8}')}")
+        for proj in sorted(proj_groups):
+            g = proj_groups[proj]
+            print(f"  {proj:<22} {fmt_tokens(g['输入']):>7} {fmt_tokens(g['输出']):>7} "
+                  f"{fmt_money(g['费用']):>8}    ")
+    else:
+        print(f"  {C.dim('今天还没有 Claude Code 活动')}")
+
+    # ── This week ──
+    print(f"\n  {C.bold('本周')}  {mon.strftime('%m/%d')} → {now.strftime('%m/%d')}  {fmt_money(week_cost)}")
+    change_str = ""
+    if last_week_cost > 0:
+        change = (week_cost / last_week_cost - 1) * 100
+        arrow = "↑" if change > 0 else "↓"
+        change_str = f"  较上周 {change:+.0f}% {arrow}  ({fmt_money(last_week_cost)})"
+    print(f"  {C.dim(f'{week_sessions} 次会话  ·  缓存命中 {week_cache_rate:.0f}%  ·  峰值 {peak_day} {fmt_money(peak_cost)}{change_str}')}")
+
+    # ── Status row ──
+    print(f"\n  {C.bold('状态')}")
+
+    if overpays:
+        print(f"  {C.yellow('🏦 比价: ' + '; '.join(overpays))}")
+    else:
+        print(f"  {C.green('🏦 比价: ✅ 渠道价正常')}")
+
+    if anomaly:
+        a_cost = fmt_money(anomaly["today_cost"])
+        a_mult = anomaly["multiplier"]
+        print(f"  {C.yellow(f'⚠️  异常: 今日 {a_cost}，是日均的 {a_mult:.1f} 倍')}")
+    else:
+        print(f"  {C.dim('⚡ 用量: 正常')}")
+
+    if best_insight:
+        clean = best_insight.replace(C.YLW, "").replace(C.GRN, "").replace(C.RST, "").replace(C.BLD, "").replace(C.DIM, "")
+        print(f"  {clean.strip()}")
+
     if budget_msg:
         print(f"  {budget_msg}")
+    else:
+        cfg_budget = cfg.get("monthly_budget", 0)
+        if cfg_budget:
+            # Compute month-to-date
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            month_ts = month_start.timestamp() * 1000
+            month_cost = sum(r["cost_total"] for r in records if r.get("timestamp") and r["timestamp"] >= month_ts)
+            print(f"  {C.dim(f'💳 预算: {fmt_money(month_cost)} / {fmt_money(cfg_budget)} ({month_cost/cfg_budget*100:.0f}%)')}")
 
     _suggest_setup(cfg)
+
+
+def cmd_today(records: list[dict], cfg: dict):
+    """Alias for dashboard."""
+    cmd_dashboard(records, cfg)
 
 
 def cmd_projects(records: list[dict], cfg: dict):
@@ -588,10 +643,10 @@ def analyze(records: list[dict], cfg: dict) -> list[str]:
         saved = s["cost"] - alt_cost
         if saved > s["cost"] * 0.1:  # >10% savings
             insights.append(
-                f"{C.yellow('💡 Model switch:')} {current_model} → {alt_name} "
-                f"would save ~{fmt_money(saved)} "
-                f"({saved / s['cost'] * 100:.0f}% cheaper). "
-                f"Use for routine tasks, keep {current_model} for complex work."
+                f"{C.yellow('💡 切换模型:')} {current_model} → {alt_name} "
+                f"可省 {fmt_money(saved)} "
+                f"({saved / s['cost'] * 100:.0f}%)。"
+                f"简单任务用 {alt_name}，复杂任务保留 {current_model}。"
             )
 
     # ── 2. Cache efficiency ──
@@ -601,21 +656,21 @@ def analyze(records: list[dict], cfg: dict) -> list[str]:
     )
     if cache_hit_rate < 50 and total_cache_read > 0:
         insights.append(
-            f"{C.yellow('💡 Cache hit rate:')} {cache_hit_rate:.1f}% — low. "
-            f"Structure your CLAUDE.md and prompts consistently "
-            f"to increase cache reuse. Each 1% → save ~{fmt_money(total_cost * 0.005)}."
+            f"{C.yellow('💡 缓存命中率:')} {cache_hit_rate:.1f}% — 偏低。"
+            f"优化 CLAUDE.md 和 prompt 结构可提高缓存复用。"
+            f"每提升 1% 约省 {fmt_money(total_cost * 0.005)}。"
         )
     elif cache_hit_rate > 90:
         insights.append(
-            f"{C.green('✅ Cache hit rate:')} {cache_hit_rate:.1f}% — excellent. "
-            f"Your prompt structure is cache-friendly."
+            f"{C.green('✅ 缓存命中率:')} {cache_hit_rate:.1f}% — 优秀。"
+            f"prompt 结构对缓存友好。"
         )
 
     if total_cache_write > total_cache_read * 2 and total_cache_write > 1_000_000:
         insights.append(
-            f"{C.yellow('💡 Cache waste:')} Writing {fmt_tokens(total_cache_write)} "
-            f"but only reading {fmt_tokens(total_cache_read)}. "
-            f"Long sessions without follow-up waste cache writes."
+            f"{C.yellow('💡 缓存浪费:')} 写入 {fmt_tokens(total_cache_write)} "
+            f"但仅读取 {fmt_tokens(total_cache_read)}。"
+            f"长会话未复用导致缓存写浪费。"
         )
 
     # ── 3. Spend concentration ──
@@ -628,10 +683,9 @@ def analyze(records: list[dict], cfg: dict) -> list[str]:
         top2 = sorted_projects[1] if len(sorted_projects) > 1 else 0
         if top1 > total_cost * 0.6 and total_cost > 10:
             insights.append(
-                f"{C.yellow('💡 Top project:')} One project accounts for "
-                f"{top1 / total_cost * 100:.0f}% of spend. "
-                f"Consider a dedicated CLAUDE.md with cache-friendly structure "
-                f"to reduce token waste on repeated context."
+                f"{C.yellow('💡 花费集中:')} 单个项目占 "
+                f"{top1 / total_cost * 100:.0f}%。"
+                f"建议为该项目建专用 CLAUDE.md，利用缓存减少重复上下文开销。"
             )
 
     # ── 4. Output/input ratio ──
@@ -639,14 +693,12 @@ def analyze(records: list[dict], cfg: dict) -> list[str]:
         ratio = total_output / total_input
         if ratio > 0.8:
             insights.append(
-                f"{C.yellow('💡 Output ratio:')} {ratio:.1f}:1 — high. "
-                f"Model is generating long responses. Tighter prompts with "
-                f"output length limits could reduce costs."
+                f"{C.yellow('💡 输出偏长:')} 输出/输入比 {ratio:.1f}:1。"
+                f"模型回复较长，精简 prompt 并限制输出长度可降成本。"
             )
         elif ratio < 0.2 and total_output > 100_000:
             insights.append(
-                f"{C.green('✅ Output ratio:')} {ratio:.1f}:1 — lean. "
-                f"Good prompt discipline."
+                f"{C.green('✅ 输出精简:')} {ratio:.1f}:1。prompt 控制得当。"
             )
 
     # ── 5. Single-model risk ──
@@ -655,10 +707,9 @@ def analyze(records: list[dict], cfg: dict) -> list[str]:
         expensive_models = ["claude-opus-4-8", "claude-sonnet-4-6", "deepseek-reasoner"]
         if m in expensive_models:
             insights.append(
-                f"{C.yellow('💡 One-model trap:')} You only use {m}. "
-                f"Many tasks (summaries, formatting, simple Q&A) don't need "
-                f"a reasoning model. Routing simple tasks to a cheaper model "
-                f"can cut costs 50-80%."
+                f"{C.yellow('💡 单一模型:')} 你只用 {m}。"
+                f"摘要、格式化、简单问答等任务不需要推理模型，"
+                f"切到便宜模型可省 50-80%。"
             )
 
     return insights
@@ -668,27 +719,25 @@ def cmd_insights(records: list[dict], cfg: dict):
     """Show optimization insights."""
     insights = analyze(records, cfg)
     if not insights:
-        print(f"\n{C.green('🎉 No obvious savings found.')} "
-              f"Your usage looks efficient!\n")
+        print(f"\n{C.green('🎉 未发现明显优化空间。')} "
+              f"使用效率不错！\n")
         return
 
-    print(f"\n{C.bold('🧠 Optimization Insights')}")
+    print(f"\n{C.bold('🧠 优化建议')}")
     print(SEP)
     for i, insight in enumerate(insights, 1):
         print(f"  {i}. {insight}")
         print()
 
-    # Summary
     total_cost = sum(r["cost_total"] for r in records)
     potential_savings = sum(
-        # Recalculate model switch savings
         sum(r["cost_total"] for r in records if r["model"] == m) * 0.3
         for m in ["claude-opus-4-8", "deepseek-reasoner"]
         if any(r["model"] == m for r in records)
     )
     if potential_savings > 0:
         print(SEP)
-        print(f"  {C.bold('Estimated savings potential:')} {fmt_money(potential_savings)}")
+        print(f"  {C.bold('预估可节省:')} {fmt_money(potential_savings)}")
     print()
 
 
@@ -908,10 +957,10 @@ def _anomaly_warning(records: list[dict]) -> str | None:
     if not a:
         return None
     return (
-        f"{C.yellow('⚠️  Spend anomaly:')} {fmt_money(a['today_cost'])} today "
-        f"vs daily avg {fmt_money(a['mean'])} "
-        f"({a['multiplier']:.1f}x). "
-        f"Top session: {a['top_session_id']}… ({fmt_money(a['top_session_cost'])})."
+        f"{C.yellow('⚠️  用量异常:')} 今日 {fmt_money(a['today_cost'])}，"
+        f"日均 {fmt_money(a['mean'])}"
+        f"（{a['multiplier']:.1f} 倍）。"
+        f"最高 session: {a['top_session_id']}… ({fmt_money(a['top_session_cost'])}）"
     )
 
 

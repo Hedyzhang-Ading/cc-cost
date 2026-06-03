@@ -32,5 +32,5 @@ classifiers = [
 cc-cost = "cc_cost.main:main"
 
 [project.urls]
-Homepage = "https://github.com/ai-operator/cc-cost"
-Issues = "https://github.com/ai-operator/cc-cost/issues"
+Homepage = "https://github.com/Hedyzhang-Ading/cc-cost"
+Issues = "https://github.com/Hedyzhang-Ading/cc-cost/issues"
